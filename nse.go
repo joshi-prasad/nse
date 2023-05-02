@@ -9,16 +9,36 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/golang/glog"
 )
 
 const (
+	kOcBankNifty     = "BANKNIFTY"
+	kOcBankNiftyStep = 100
+	kOcNifty         = "NIFTY"
+	kOcNiftyStep     = 50
+	kOcFinNifty      = "FINNIFTY"
+	kOcFinNiftyStep  = 50
+
+	kOcFiltered     = "filtered"
+	kOcFilteredData = "data"
+
 	kOcRecords                = "records"
 	kOcRecordsExpiryDates     = "expiryDates"
 	kOcRecordsTimestamp       = "timestamp"
 	kOcRecordsUnderlyingValue = "underlyingValue"
 	kOcRecordsStrikePrices    = "strikePrices"
+	kOcRecordsDataExpiryDate  = "expiryDate"
+	kOcRecordsDataStrikePrice = "strikePrice"
+	kOcRecordsDataPe          = "PE"
+	kOcRecordsDataCe          = "CE"
+
+	kOcRowOpenInterest         = "openInterest"
+	kOcRowChangeinOpenInterest = "changeinOpenInterest"
+	kOcRowLastPrice            = "lastPrice"
+	kOcRowTotalTradedVolume    = "totalTradedVolume"
 )
 
 type NseResponse struct {
@@ -36,13 +56,23 @@ func (self *NseResponse) ResponseBuffer() *bytes.Buffer {
 }
 
 type NseOcResponse struct {
+	symbol      string
 	fetchedJson map[string]interface{}
+	step        int32
 }
 
-func NewNseOcResponse(resp map[string]interface{}) *NseOcResponse {
+func NewNseOcResponse(
+	symbol string,
+	resp map[string]interface{}) *NseOcResponse {
 	return &NseOcResponse{
+		symbol:      symbol,
 		fetchedJson: resp,
+		step:        0,
 	}
+}
+
+func (self *NseOcResponse) SetOptionStep(step int32) {
+	self.step = step
 }
 
 func (self *NseOcResponse) parseRecords() (map[string]interface{}, error) {
@@ -62,108 +92,16 @@ func (self *NseOcResponse) parseRecords() (map[string]interface{}, error) {
 	return records, nil
 }
 
-func (self *NseOcResponse) getRecordsStrField(
-	records map[string]interface{},
-	field string) (string, error) {
-
-	fieldInt, ok := records[field]
-	if !ok {
-		msg := fmt.Sprintf("Parsing OC records failed. Field %s not found.",
-			field)
-		glog.Error(msg)
-		return "", errors.New(msg)
-	}
-	value, ok := fieldInt.(string)
-	if !ok {
-		msg := fmt.Sprintf("Parsing OC records failed."+
-			"Field %s is not of string type.", field)
-		glog.Error(msg)
-		return "", errors.New(msg)
-	}
-	return value, nil
-}
-
-func (self *NseOcResponse) getRecordsFloat64Field(
-	records map[string]interface{}, field string) (float64, error) {
-	fieldValue, ok := records[field]
-	if !ok {
-		msg := fmt.Sprintf("Parsing records failed. Field %s not found.", field)
-		glog.Error(msg)
-		return 0, errors.New(msg)
-	}
-
-	value, ok := fieldValue.(float64)
-	if !ok {
-		msg := fmt.Sprintf("Parsing records failed."+
-			"Field %s is not of float64 type.", field)
-		glog.Error(msg)
-		return 0, errors.New(msg)
-	}
-
-	return value, nil
-}
-
-func (self *NseOcResponse) getRecordsArrayField(
-	records map[string]interface{},
-	field string) ([]interface{}, error) {
-
-	fieldInt, ok := records[field]
-	if !ok {
-		msg := fmt.Sprintf("Parsing OC records failed. Field %s not found.",
-			field)
-		return []interface{}{}, errors.New(msg)
-	}
-	value, ok := fieldInt.([]interface{})
-	if !ok {
-		msg := fmt.Sprintf("Parsing OC records failed."+
-			"Field %s is not of array type.", field)
-		return []interface{}{}, errors.New(msg)
-	}
-	return value, nil
-}
-
-func (self *NseOcResponse) convertToStringSlice(
-	data []interface{}) []string {
-	result := make([]string, len(data))
-	for i, v := range data {
-		if str, ok := v.(string); ok {
-			result[i] = str
-		} else {
-			// Handle the case where the element is not a string
-			// You can choose to skip, ignore, or perform some other action
-			result[i] = ""
-			glog.Info(fmt.Sprintf("Value %v is not string.", v))
-		}
-	}
-	return result
-}
-
-func (self *NseOcResponse) convertToIntSlice(
-	data []interface{}) []int32 {
-	result := make([]int32, len(data))
-	for i, v := range data {
-		if str, ok := v.(int32); ok {
-			result[i] = str
-		} else {
-			// Handle the case where the element is not a string
-			// You can choose to skip, ignore, or perform some other action
-			result[i] = 0
-			glog.Info(fmt.Sprintf("Value %v is not integer.", v))
-		}
-	}
-	return result
-}
-
 func (self *NseOcResponse) ExpiryDates() ([]string, error) {
 	records, err := self.parseRecords()
 	if err != nil {
 		return []string{}, err
 	}
-	arrayStrInt, err := self.getRecordsArrayField(records, kOcRecordsExpiryDates)
+	arrayStrInt, err := getArrayField(records, kOcRecordsExpiryDates)
 	if err != nil {
 		return []string{}, err
 	}
-	return self.convertToStringSlice(arrayStrInt), nil
+	return convertToStringSlice(arrayStrInt), nil
 }
 
 func (self *NseOcResponse) Timestamp() (string, error) {
@@ -171,7 +109,7 @@ func (self *NseOcResponse) Timestamp() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return self.getRecordsStrField(records, kOcRecordsTimestamp)
+	return getStrField(records, kOcRecordsTimestamp)
 }
 
 func (self *NseOcResponse) UnderlyingValue() (float64, error) {
@@ -179,7 +117,116 @@ func (self *NseOcResponse) UnderlyingValue() (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return self.getRecordsFloat64Field(records, kOcRecordsUnderlyingValue)
+	return getFloat64Field(records, kOcRecordsUnderlyingValue)
+}
+
+func (self *NseOcResponse) parseFiltered() (map[string]interface{}, error) {
+	recordInt, ok := self.fetchedJson[kOcRecords]
+	if !ok {
+		msg := fmt.Sprintf("Parsing OC failed. Field %s not found.", kOcRecords)
+		glog.Error(msg)
+		return map[string]interface{}{}, errors.New(msg)
+	}
+	records, ok := recordInt.(map[string]interface{})
+	if !ok {
+		msg := fmt.Sprintf("Parsing OC failed. Incorrect field %s type.",
+			kOcRecords)
+		glog.Error(msg)
+		return map[string]interface{}{}, errors.New(msg)
+	}
+	return records, nil
+}
+
+func (self *NseOcResponse) FilteredData() ([]interface{}, error) {
+	records, err := self.parseFiltered()
+	if err != nil {
+		return []interface{}{}, err
+	}
+	return getArrayField(records, kOcFilteredData)
+}
+
+func (self *NseOcResponse) stringExists(arr []string, target string) bool {
+	for _, str := range arr {
+		if str == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (self *NseOcResponse) GetExpiryOc(
+	symbol string,
+	expiryDate string) (*NseOc, error) {
+
+	availableExpiries, err := self.ExpiryDates()
+	if err != nil {
+		glog.Error("Failed to fetch available expiry dates for option chain.")
+		return nil, err
+	}
+	if !self.stringExists(availableExpiries, expiryDate) {
+		msg := fmt.Sprintf("No option chain for expiry=%s.", expiryDate)
+		glog.Error(msg)
+		glog.Error(availableExpiries)
+		return nil, errors.New(msg)
+	}
+
+	timestamp, err := self.Timestamp()
+	if err != nil {
+		msg := fmt.Sprintf("Failed to fetch timestamp.")
+		glog.Error(msg)
+		return nil, errors.New(msg)
+	}
+
+	underlyingValue, err := self.UnderlyingValue()
+	if err != nil {
+		msg := fmt.Sprintf("Failed to fetch underlying asset value.")
+		glog.Error(msg)
+		return nil, errors.New(msg)
+	}
+
+	recordsDataInt, err := self.FilteredData()
+	if err != nil {
+		msg := fmt.Sprintf("Failed to fetch option chain data records.")
+		glog.Error(msg)
+		return nil, errors.New(msg)
+	}
+
+	expiryDataRecords, err :=
+		self.getExpiryDataRecords(expiryDate, recordsDataInt)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to fetch data records with error=%s", err)
+		glog.Error(msg)
+		return nil, err
+	}
+
+	oc := NewNseOc(symbol, expiryDate, timestamp, underlyingValue)
+	oc.SetOcDataRecords(expiryDataRecords)
+	return oc, nil
+}
+
+func (self *NseOcResponse) getExpiryDataRecords(
+	expiryDate string,
+	recordsDataInt []interface{}) ([]map[string]interface{}, error) {
+
+	expiryDataRecords := []map[string]interface{}{}
+	for _, recordInt := range recordsDataInt {
+		dataRecord, ok := recordInt.(map[string]interface{})
+		if !ok {
+			msg := fmt.Sprintf("Unexpected data record.")
+			return []map[string]interface{}{}, errors.New(msg)
+		}
+		dataRecordExpiryDate, err :=
+			getStrField(dataRecord, kOcRecordsDataExpiryDate)
+		if err != nil {
+			msg := fmt.Sprintf("Failed to fetch expiry data from data records.")
+			return []map[string]interface{}{}, errors.New(msg)
+		}
+		if dataRecordExpiryDate != expiryDate {
+			continue
+		}
+		expiryDataRecords = append(expiryDataRecords, dataRecord)
+	}
+	return expiryDataRecords, nil
 }
 
 type NSE struct {
@@ -276,6 +323,11 @@ func (self *NSE) FetchUrl(url string) (
 			// http.StatusUnauthorized is 401
 			glog.Error(errMsg, "Fetching Cookie.")
 			self.fetchCookie = true
+		case http.StatusForbidden:
+			// 403
+			glog.Error(errMsg, "Sleeping for 5 minutes.")
+			self.fetchCookie = true
+			time.Sleep(5 * time.Minute)
 		default:
 			glog.Error(errMsg, "Retrying...")
 		}
@@ -342,5 +394,42 @@ func (self *NSE) FetchOptionChainUrl(symbol string) (*NseOcResponse, error) {
 		glog.Error(msg)
 		return nil, err
 	}
-	return NewNseOcResponse(jsonData), nil
+	return NewNseOcResponse(symbol, jsonData), nil
+}
+
+func (self *NSE) FetchOptionChain(symbol string, expiryDate string) (*NseOc, error) {
+	fetchResp, err := self.FetchOptionChainUrl(symbol)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to fetch %s option chain.", symbol)
+		glog.Error(msg)
+		return nil, err
+	}
+	return fetchResp.GetExpiryOc(symbol, expiryDate)
+}
+
+func (self *NSE) FetchBankNiftyOc(expiryDate string) (*NseOc, error) {
+	oc, err := self.FetchOptionChain(kOcBankNifty, expiryDate)
+	if err != nil {
+		return nil, err
+	}
+	oc.SetStrikeStep(kOcBankNiftyStep)
+	return oc, nil
+}
+
+func (self *NSE) FetchNiftyOc(expiryDate string) (*NseOc, error) {
+	oc, err := self.FetchOptionChain(kOcNifty, expiryDate)
+	if err != nil {
+		return nil, err
+	}
+	oc.SetStrikeStep(kOcNiftyStep)
+	return oc, nil
+}
+
+func (self *NSE) FetchFinNiftyOc(expiryDate string) (*NseOc, error) {
+	oc, err := self.FetchOptionChain(kOcFinNifty, expiryDate)
+	if err != nil {
+		return nil, err
+	}
+	oc.SetStrikeStep(kOcFinNiftyStep)
+	return oc, nil
 }
