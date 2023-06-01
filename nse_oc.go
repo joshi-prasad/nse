@@ -262,6 +262,8 @@ type OptionChainShortData struct {
 	PeOiRank       int
 	PeChangeOiRank int
 	PeWeightedRank float32
+
+	Timestamp int64
 }
 
 type NseShortOc struct {

@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/golang/glog"
@@ -296,6 +297,7 @@ func (self *NSE) FetchUrl(url string) (
 	var err error
 
 	retry := true
+	retryCount := 0
 	for retry {
 		if self.fetchCookie {
 			self.FetchCookie()
@@ -329,6 +331,11 @@ func (self *NSE) FetchUrl(url string) (
 			self.fetchCookie = true
 			time.Sleep(5 * time.Minute)
 		default:
+			retryCount += 1
+			if retryCount >= 5 {
+				return nil, nil, errors.New("Failed with error " + strconv.Itoa(resp.StatusCode))
+			}
+			time.Sleep(1 * time.Second)
 			glog.Error(errMsg, "Retrying...")
 		}
 	}
@@ -432,4 +439,19 @@ func (self *NSE) FetchFinNiftyOc(expiryDate string) (*NseOc, error) {
 	}
 	oc.SetStrikeStep(kOcFinNiftyStep)
 	return oc, nil
+}
+
+func (self *NSE) FetchFOParticipantData(
+	date time.Time) ([]NseFODataRecord, error) {
+
+	suffix := NseFOData{}.DateToNseFOtData(date)
+	url := fmt.Sprintf("%s%s.csv", self.fnoParticipantOiUrlPreix, suffix)
+	_, data, err := self.FetchUrl(url)
+	if err != nil {
+		msg := fmt.Sprintf("Fetching futures data failed with error=%s", err)
+		glog.Error(msg)
+		return nil, err
+	}
+
+	return NseFOData{}.Parse(data.ResponseBuffer())
 }
